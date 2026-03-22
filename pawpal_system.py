@@ -7,6 +7,7 @@ Class skeletons for Owner, Pet, Task, and Scheduler.
 
 from __future__ import annotations
 from dataclasses import dataclass, field
+from datetime import date, timedelta
 
 
 # ---------------------------------------------------------------------------
@@ -24,10 +25,15 @@ class Task:
     category: str = "general"
     frequency: str = "daily"
     preferred_time: str = "anytime"
+    time: str = ""
+    due_date: date = field(default_factory=date.today)
     is_required: bool = False
+    start_minute: int | None = None
     notes: str = ""
     description: str = ""
     is_completed: bool = False
+    last_completed_day: int | None = None
+    last_completed_on: date | None = None
 
     def __post_init__(self) -> None:
         """Normalize and validate task attributes after initialization."""
@@ -37,14 +43,26 @@ class Task:
         self.category = self.category.strip().lower()
         self.frequency = self.frequency.strip().lower()
         self.preferred_time = self.preferred_time.strip().lower()
+        self.time = self.time.strip()
         if not self.task_id:
             raise ValueError("task_id cannot be empty")
         if not self.title:
             raise ValueError("title cannot be empty")
         if self.duration_minutes <= 0:
             raise ValueError("duration_minutes must be greater than 0")
+        if self.time:
+            pieces = self.time.split(":")
+            if len(pieces) != 2 or not all(part.isdigit() for part in pieces):
+                raise ValueError("time must be in HH:MM format")
+            hours, minutes = int(pieces[0]), int(pieces[1])
+            if hours < 0 or hours > 23 or minutes < 0 or minutes > 59:
+                raise ValueError("time must be in HH:MM format")
+        if self.start_minute is not None and self.start_minute < 0:
+            raise ValueError("start_minute cannot be negative")
         if self.priority not in {"low", "medium", "high"}:
             raise ValueError("priority must be 'low', 'medium', or 'high'")
+        if not isinstance(self.due_date, date):
+            raise ValueError("due_date must be a date")
 
     def is_high_priority(self) -> bool:
         """Return whether this task is marked as high priority."""
@@ -71,9 +89,36 @@ class Task:
             score += 3
         return score
 
-    def mark_complete(self) -> None:
-        """Mark this task as completed."""
+    def mark_complete(
+        self,
+        day_index: int | None = None,
+        completed_on: date | None = None,
+    ) -> None:
+        """Mark this task complete and stamp completion metadata."""
         self.is_completed = True
+        if completed_on is not None and day_index is not None:
+            raise ValueError("Provide either day_index or completed_on, not both")
+
+        if completed_on is not None:
+            self.last_completed_on = completed_on
+            return
+
+        if day_index is not None:
+            if day_index < 0:
+                raise ValueError("day_index cannot be negative")
+            self.last_completed_day = day_index
+            self.last_completed_on = date.today() + timedelta(days=day_index)
+            return
+
+        self.last_completed_on = date.today()
+
+    def is_due_on_day(self, day_index: int) -> bool:
+        """Return whether this task should be considered due on a given day."""
+        if day_index < 0:
+            raise ValueError("day_index cannot be negative")
+
+        check_date = date.today() + timedelta(days=day_index)
+        return (not self.is_completed) and self.due_date <= check_date
 
     def update_task(self, **kwargs) -> None:
         """Update task fields dynamically and re-validate task data."""
@@ -276,6 +321,15 @@ class Scheduler:
         self.unscheduled_tasks: list[Task] = []
         self.selection_reasons: dict[str, str] = {}
         self.task_pet_lookup: dict[str, str] = {}
+        self.schedule_date: date = date.today()
+
+    TIME_SLOT_ORDER = {
+        "morning": 0,
+        "afternoon": 1,
+        "evening": 2,
+        "night": 3,
+        "anytime": 4,
+    }
 
     def refresh_inputs(self) -> None:
         """Reload pets, tasks, and scheduling state from current owner inputs."""
@@ -293,11 +347,56 @@ class Scheduler:
                 self.task_pet_lookup[task.task_id] = pet.name
         self.tasks = tasks
 
-    def generate_schedule(self) -> list[Task]:
-        """Build and return the list of tasks scheduled for today."""
+    def generate_schedule(self, day_index: int = 0) -> list[Task]:
+        """Build and return the list of tasks due on the target day.
+
+        The target day is computed as ``today + day_index`` and stored in
+        ``self.schedule_date``. Eligibility checks (including recurrence due dates)
+        are then evaluated against that date.
+        """
+        self.schedule_date = date.today() + timedelta(days=day_index)
         self.refresh_inputs()
         self.fit_tasks_into_day()
         return list(self.scheduled_tasks)
+
+    def prepare_recurring_tasks(self, day_index: int = 0) -> None:
+        """Backward-compatible no-op (recurrence now creates next instances)."""
+        _ = day_index
+
+    def mark_task_complete(
+        self,
+        task_id: str,
+        completed_on: date | None = None,
+    ) -> Task | None:
+        """Complete a task and optionally create its next recurring instance.
+
+        For tasks with ``daily`` or ``weekly`` frequency, this method creates a new
+        pending Task due on ``completed_on + timedelta(days=1|7)`` and adds it to the
+        same pet. Non-recurring tasks are just marked complete.
+
+        Returns:
+            The newly created recurring task when applicable, otherwise ``None``.
+        """
+        completion_date = completed_on or date.today()
+        pets = [self.pet] if self.pet is not None else self.owner.get_pets()
+
+        for pet in pets:
+            task = pet.get_task_by_id(task_id)
+            if task is None:
+                continue
+
+            task.mark_complete(completed_on=completion_date)
+
+            if task.frequency not in {"daily", "weekly"}:
+                return None
+
+            days_to_add = 1 if task.frequency == "daily" else 7
+            next_due_date = completion_date + timedelta(days=days_to_add)
+            next_task = self._create_next_recurring_task(task, pet, next_due_date)
+            pet.add_task(next_task)
+            return next_task
+
+        raise ValueError(f"Task with id '{task_id}' was not found")
 
     def rank_tasks(self) -> list[Task]:
         """Return eligible tasks sorted by ranking score and tie-breakers."""
@@ -325,12 +424,91 @@ class Scheduler:
                     "Skipped because the task exceeds the owner's daily time limit."
                 )
                 continue
+            if task.due_date > self.schedule_date:
+                self.unscheduled_tasks.append(task)
+                self.selection_reasons[task.task_id] = (
+                    "Skipped because this recurring task is not due yet."
+                )
+                continue
             eligible_tasks.append(task)
         return eligible_tasks
 
     def sort_tasks(self) -> list[Task]:
         """Return tasks ordered according to scheduling priority rules."""
         return self.rank_tasks()
+
+    def sort_tasks_by_time(self, tasks: list[Task] | None = None) -> list[Task]:
+        """Sort tasks by coarse time buckets and deterministic tie-breakers.
+
+        Ordering priority:
+        1) preferred slot (morning/afternoon/evening/night/anytime),
+        2) explicit ``start_minute`` when present,
+        3) shorter duration,
+        4) title alphabetically.
+        """
+        tasks_to_sort = list(tasks) if tasks is not None else list(self.tasks)
+        return sorted(
+            tasks_to_sort,
+            key=lambda task: (
+                self.TIME_SLOT_ORDER.get(task.preferred_time, 99),
+                task.start_minute if task.start_minute is not None else 10_000,
+                task.duration_minutes,
+                task.title.lower(),
+            ),
+        )
+
+    def sort_by_time(self, tasks: list[Task] | None = None) -> list[Task]:
+        """Sort tasks by explicit ``HH:MM`` values.
+
+        Tasks without a ``time`` value are pushed to the end by assigning them a
+        large sentinel tuple key ``(99, 99)``.
+        """
+        tasks_to_sort = list(tasks) if tasks is not None else list(self.tasks)
+        return sorted(
+            tasks_to_sort,
+            key=lambda task: (
+                tuple(int(part) for part in task.time.split(":")) if task.time else (99, 99),
+                task.title.lower(),
+            ),
+        )
+
+    def filter_tasks_by_pet_status(
+        self,
+        pet_name: str | None = None,
+        status: str = "all",
+    ) -> list[Task]:
+        """Filter tasks by optional pet name and completion status.
+
+        Args:
+            pet_name: When provided, include only tasks for that pet.
+            status: One of ``all``, ``completed``, or ``pending``.
+
+        Returns:
+            A filtered list preserving original task order.
+        """
+        if not self.tasks:
+            self.refresh_inputs()
+
+        normalized_pet = pet_name.strip().lower() if pet_name else None
+        normalized_status = status.strip().lower()
+        if normalized_status not in {"all", "completed", "pending"}:
+            raise ValueError("status must be 'all', 'completed', or 'pending'")
+
+        filtered_tasks: list[Task] = []
+        for task in self.tasks:
+            owner_pet_name = self.task_pet_lookup.get(task.task_id, "").lower()
+            if normalized_pet and owner_pet_name != normalized_pet:
+                continue
+            if normalized_status == "completed" and not task.is_completed:
+                continue
+            if normalized_status == "pending" and task.is_completed:
+                continue
+            filtered_tasks.append(task)
+        return filtered_tasks
+
+    def filter_by(self, pet_name: str | None = None, status: str = "all") -> list[Task]:
+        """Alias for filtering tasks by pet name and completion status."""
+        return self.filter_tasks_by_pet_status(pet_name=pet_name, status=status)
 
     def fit_tasks_into_day(self) -> None:
         """Select ranked tasks that fit time and daily task-count constraints."""
@@ -352,9 +530,68 @@ class Scheduler:
                 )
                 continue
 
+            conflict_task = self._find_conflicting_task(task)
+            if conflict_task is not None:
+                conflicting_title = conflict_task.title
+                self.unscheduled_tasks.append(task)
+                self.selection_reasons[task.task_id] = (
+                    f"Skipped because it conflicts with '{conflicting_title}'."
+                )
+                continue
+
             self.scheduled_tasks.append(task)
             remaining_minutes -= task.duration_minutes
             self.selection_reasons[task.task_id] = self._build_selection_reason(task)
+
+    def detect_conflicts(self, tasks: list[Task] | None = None) -> list[tuple[Task, Task]]:
+        """Return all overlapping task pairs based on computed start/end windows.
+
+        The method builds a timeline of tasks with concrete start times (from either
+        ``start_minute`` or parsed ``HH:MM``), sorts by start time, and scans forward
+        with early-break once no further overlap is possible.
+        """
+        if not self.tasks:
+            self.refresh_inputs()
+
+        tasks_to_check = list(tasks) if tasks is not None else list(self.tasks)
+        timeline: list[tuple[Task, int, int]] = []
+        for task in tasks_to_check:
+            start_minute = self._get_task_start_minute(task)
+            if start_minute is None:
+                continue
+            end_minute = start_minute + task.duration_minutes
+            timeline.append((task, start_minute, end_minute))
+        timeline.sort(key=lambda entry: entry[1])
+
+        conflicts: list[tuple[Task, Task]] = []
+        for index, (current_task, current_start, current_end) in enumerate(timeline):
+            for candidate_task, candidate_start, _candidate_end in timeline[index + 1:]:
+                if candidate_start >= current_end:
+                    break
+                conflicts.append((current_task, candidate_task))
+        return conflicts
+
+    def get_conflict_warnings(self, tasks: list[Task] | None = None) -> list[str]:
+        """Create human-readable warnings for each detected conflict pair.
+
+        This is intentionally lightweight: it reports overlaps as warnings without
+        raising exceptions or mutating task state.
+        """
+        if not self.tasks:
+            self.refresh_inputs()
+
+        warnings: list[str] = []
+        for task_a, task_b in self.detect_conflicts(tasks):
+            pet_a = self.task_pet_lookup.get(task_a.task_id, "Unknown pet")
+            pet_b = self.task_pet_lookup.get(task_b.task_id, "Unknown pet")
+            conflict_scope = "same pet" if pet_a == pet_b else "different pets"
+            start_a = self._format_task_start(task_a)
+            start_b = self._format_task_start(task_b)
+            warnings.append(
+                f"Conflict warning ({conflict_scope}): {pet_a} - {task_a.title} ({start_a}) overlaps with "
+                f"{pet_b} - {task_b.title} ({start_b})."
+            )
+        return warnings
 
     def explain_schedule(self) -> str:
         """Return a readable explanation of selected and skipped tasks."""
@@ -421,3 +658,77 @@ class Scheduler:
         if not reasons:
             reasons.append("it fits within the remaining time budget")
         return "Selected because " + ", ".join(reasons) + "."
+
+    def _find_conflicting_task(self, task: Task) -> Task | None:
+        """Return the first already-scheduled task that conflicts with the candidate."""
+        if self._get_task_start_minute(task) is None:
+            return None
+        for scheduled_task in self.scheduled_tasks:
+            if self._tasks_conflict(task, scheduled_task):
+                return scheduled_task
+        return None
+
+    @staticmethod
+    def _tasks_conflict(task_a: Task, task_b: Task) -> bool:
+        """Return whether two tasks overlap after normalizing their start times."""
+        start_a = Scheduler._get_task_start_minute(task_a)
+        start_b = Scheduler._get_task_start_minute(task_b)
+        if start_a is None or start_b is None:
+            return False
+
+        task_a_end = start_a + task_a.duration_minutes
+        task_b_end = start_b + task_b.duration_minutes
+        return start_a < task_b_end and start_b < task_a_end
+
+    @staticmethod
+    def _get_task_start_minute(task: Task) -> int | None:
+        """Resolve a task's start minute from ``start_minute`` or ``HH:MM`` text."""
+        if task.start_minute is not None:
+            return task.start_minute
+        if not task.time:
+            return None
+        hours_text, minutes_text = task.time.split(":")
+        return int(hours_text) * 60 + int(minutes_text)
+
+    @staticmethod
+    def _format_task_start(task: Task) -> str:
+        """Return a display-friendly time label used in conflict warnings."""
+        if task.time:
+            return task.time
+        start_minute = Scheduler._get_task_start_minute(task)
+        if start_minute is None:
+            return "unspecified"
+        hours = start_minute // 60
+        minutes = start_minute % 60
+        return f"{hours:02d}:{minutes:02d}"
+
+    @staticmethod
+    def _create_next_recurring_task(task: Task, pet: Pet, next_due_date: date) -> Task:
+        """Clone a recurring task into a new pending task due on ``next_due_date``.
+
+        The method also ensures a unique ``task_id`` within the pet by appending
+        a numeric suffix when needed.
+        """
+        base_task_id = f"{task.task_id}-next-{next_due_date.isoformat()}"
+        candidate_task_id = base_task_id
+        counter = 2
+        while pet.get_task_by_id(candidate_task_id) is not None:
+            candidate_task_id = f"{base_task_id}-{counter}"
+            counter += 1
+
+        return Task(
+            task_id=candidate_task_id,
+            title=task.title,
+            duration_minutes=task.duration_minutes,
+            priority=task.priority,
+            category=task.category,
+            frequency=task.frequency,
+            preferred_time=task.preferred_time,
+            time=task.time,
+            due_date=next_due_date,
+            is_required=task.is_required,
+            start_minute=task.start_minute,
+            notes=task.notes,
+            description=task.description,
+            is_completed=False,
+        )

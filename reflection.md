@@ -31,7 +31,9 @@
 **b. Tradeoffs**
 
 - Describe one tradeoff your scheduler makes.
+	- One tradeoff is that the scheduler uses a lightweight overlap check based on each task's start time and duration, then skips a conflicting task instead of trying to re-time or optimize the whole day. This keeps the algorithm simple and predictable, but it can leave unused time if a conflicting task might have worked at a different slot.
 - Why is that tradeoff reasonable for this scenario?
+	- This is reasonable for the PawPal+ scenario because the app is meant to give a quick, practical daily plan for a busy pet owner. Fast conflict warnings and clear skip reasons are easier to trust and explain than a heavier optimization model, especially in an MVP classroom project.
 
 ---
 

@@ -22,6 +22,16 @@ Your final app should:
 - Display the plan clearly (and ideally explain the reasoning)
 - Include tests for the most important scheduling behaviors
 
+## Smarter Scheduling
+
+Recent logic updates make scheduling more practical and explainable:
+
+- **Time-aware sorting:** tasks can be sorted using HH:MM values and preferred time windows.
+- **Flexible filtering:** tasks can be filtered by pet and completion status (all, pending, completed).
+- **Recurring automation:** when a daily/weekly task is completed, the next occurrence is auto-created with a computed due date.
+- **Conflict detection warnings:** overlapping tasks are detected and surfaced as warning messages instead of crashing the app.
+- **Clear scheduling reasons:** selected and skipped tasks include readable explanations for owner-facing transparency.
+
 ## Getting started
 
 ### Setup
