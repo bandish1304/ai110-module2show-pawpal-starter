@@ -5,15 +5,19 @@
 **a. Initial design**
 
 - Briefly describe your initial UML design.
-	- My initial UML design focused on three core user actions: managing owner/pet information, managing care tasks, and generating a daily care plan.
+	- My initial UML design separated data objects from planning logic. I focused on modeling the owner, pet, and tasks as core entities, and then using a scheduler class to generate a realistic daily care plan from those inputs.
 
 - What classes did you include, and what responsibilities did you assign to each?
-	- I included an OwnerProfile class to store owner preferences and available time, a PetProfile class to store pet details and routine constraints, a CareTask class to represent each task (type, duration, and priority), and a Scheduler class to choose and order tasks for the day based on constraints.
+	- I included four classes: Owner, Pet, Task, and Scheduler. Owner stores time limits and preferences (like available minutes per day and preferred schedule). Pet stores pet-specific information and maintains the list of care tasks. Task represents each care activity with attributes like title, duration, priority, and whether it is required. Scheduler takes the owner constraints and pet tasks, ranks and filters tasks, and builds the daily plan in a feasible order.
 
 **b. Design changes**
 
 - Did your design change during implementation?
+	- Yes. After reviewing my class skeleton, I made a few design-level changes to improve object relationships and avoid future logic issues.
 - If yes, describe at least one change and why you made it.
+	- First, I added a task_id attribute to Task and changed Pet.remove_task() to remove by ID instead of title. I made this change because task titles can repeat (for example, multiple "Walk" tasks), and using IDs creates a more reliable relationship between Pet and Task objects.
+	- Second, I added a get_task_by_id() method to Pet so the scheduler or UI can retrieve a specific task directly instead of scanning by title.
+	- Third, I added refresh_inputs() and a  dictionary. This makes the data flow clearer (reload tasks and constraints in one place) and prepares the scheduler to explain why each task was selected or skipped, which supports the project requirement to justify the daily plan.
 
 ---
 
