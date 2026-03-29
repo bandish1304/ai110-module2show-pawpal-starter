@@ -1,156 +1,124 @@
-# PawPal+ (Module 2 Project)
+﻿# PawPal+ (Module 2 Project)
 
-You are building **PawPal+**, a Streamlit app that helps a pet owner plan care tasks for their pet.
+PawPal+ is a Streamlit app I built for a pet-care scheduling project.
 
-## Scenario
+The idea was pretty straightforward: if someone has limited time and a bunch of pet tasks competing for attention, the app should help them decide what to do first and what can wait.
 
-A busy pet owner needs help staying consistent with pet care. They want an assistant that can:
+## Features
 
-- Track pet care tasks (walks, feeding, meds, enrichment, grooming, etc.)
-- Consider constraints (time available, priority, owner preferences)
-- Produce a daily plan and explain why it chose that plan
+- Builds a realistic daily plan from actual constraints (not just dumping every task).
+- Sorts scheduled tasks by clock time (HH:MM), so it is easy to read.
+- Supports preferred time windows (morning, afternoon, evening, night, anytime).
+- Flags overlapping tasks and shows conflict warnings.
+- Optional advanced mode: resolves timed conflicts by moving a task to the next available slot.
+- Saves owner, pets, and tasks to data.json and reloads them when the app starts.
+- Lets you filter tasks by pet and status (all, pending, completed).
+- Handles recurrence (daily/weekly) by creating the next due task after completion.
+- Respects owner limits like total minutes per day and max tasks per day.
+- Shows plain-language reasons for why tasks were selected or skipped.
 
-Your job is to design the system first (UML), then implement the logic in Python, then connect it to the Streamlit UI.
+## Demo
 
-## What you will build
+<a href="course_images/ai110/pawpal_final_streamlit.png" target="_blank"><img src='course_images/ai110/pawpal_final_streamlit.png' title='PawPal App' width='' alt='PawPal App' class='center-block' /></a>
 
-Your final app should:
+This screenshot is from the final version of the app, including task entry, schedule generation, and conflict-aware planning.
 
-- Let a user enter basic owner + pet info
-- Let a user add/edit tasks (duration + priority at minimum)
-- Generate a daily schedule/plan based on constraints and priorities
-- Display the plan clearly (and ideally explain the reasoning)
-- Include tests for the most important scheduling behaviors
+## Problem Context
 
-## Smarter Scheduling
+The app models a common real-life situation: a pet owner has limited time, but still needs to stay consistent with feeding, walks, meds, enrichment, grooming, etc.
 
-Recent logic updates make scheduling more practical and explainable:
+I organized the project in three layers:
 
-- **Time-aware sorting:** tasks can be sorted using HH:MM values and preferred time windows.
-- **Flexible filtering:** tasks can be filtered by pet and completion status (all, pending, completed).
-- **Recurring automation:** when a daily/weekly task is completed, the next occurrence is auto-created with a computed due date.
-- **Conflict detection warnings:** overlapping tasks are detected and surfaced as warning messages instead of crashing the app.
-- **Clear scheduling reasons:** selected and skipped tasks include readable explanations for owner-facing transparency.
+- Class design (UML)
+- Core scheduling logic in Python
+- Streamlit UI for input, schedule display, and explanations
 
-## Getting started
+## How Scheduling Works
+
+At a high level, the scheduler does this:
+
+1. Pulls tasks from all pets.
+2. Filters out tasks that are completed, not due, or not feasible.
+3. Ranks tasks using priority, required flag, preferences, and timing fit.
+4. Fits tasks into the day while respecting time/task-count limits.
+5. Checks for overlaps and reports conflicts as warnings.
+6. Records reasons for both scheduled and unscheduled tasks.
+
+Advanced algorithmic option:
+
+- The scheduler can run in next-available-slot mode.
+- If a timed task conflicts, it tries to move that task forward to the nearest open slot in the same day instead of skipping immediately.
+- Default behavior is unchanged (skip on conflict), so this mode is opt-in.
+
+## How Agent Mode Was Used
+
+I did not use Agent Mode to blindly write code.
+
+I mostly used it like a smart pair-programmer.
+
+First, I used it to quickly find where scheduler ranking, conflict handling, and task fitting were actually happening in the code, so I could make changes in the right place.
+
+Then I used it while implementing the next-available-slot feature. The key decision was to keep it optional, so the original behavior still works the same unless this mode is enabled.
+
+Finally, I used it to think through edge cases and test scenarios. After each change, I ran tests to make sure nothing else broke.
+
+So Agent Mode definitely sped up development, but design choices and final validation still came from me.
+
+## Quick Start
 
 ### Setup
 
-```bash
-python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-```
+	python -m venv .venv
+	source .venv/bin/activate  # Windows: .venv\Scripts\activate
+	pip install -r requirements.txt
 
-### Suggested workflow
 
-1. Read the scenario carefully and identify requirements and edge cases.
-2. Draft a UML diagram (classes, attributes, methods, relationships).
-3. Convert UML into Python class stubs (no logic yet).
-4. Implement scheduling logic in small increments.
-5. Add tests to verify key behaviors.
-6. Connect your logic to the Streamlit UI in app.py.
-7. Refine UML so it matches what you actually built.
+### Run the app
 
-## Testing PawPal+
+	streamlit run app.py
 
-### Running Tests
 
-To run the complete test suite, use:
+## Testing
 
-```bash
-python -m pytest tests/test_pawpal.py -v
-```
+### Run tests
 
-For a quick summary without verbose output:
+	python -m pytest tests/test_pawpal.py -v
 
-```bash
-python -m pytest tests/test_pawpal.py -q
-```
 
-### Test Coverage
+Quick mode:
 
-The test suite includes **83 comprehensive tests** covering:
+	python -m pytest tests/test_pawpal.py -q
 
-#### **Task Validation & Properties (18 tests)**
-- Valid task creation with attributes (priority, frequency, time)
-- Input validation (empty fields, negative values, invalid formats)
-- Task methods: is_high_priority(), fits_time_limit(), get_priority_score(), mark_complete()
-- Edge cases: zero duration, invalid time format (25:00), conflicting mark_complete() parameters
 
-#### **Pet Task Management (11 tests)**
-- Adding/removing tasks with duplicate ID enforcement
-- Filtering required tasks only
-- Pet summary generation
-- Edge cases: empty pet, non-existent task removal
+### What is covered
 
-#### **Owner Scheduling Constraints (16 tests)**
-- Owner creation with time budgets and preferences
-- Pet management (add/remove/retrieve with case-insensitivity)
-- Preference handling (add, remove, normalize duplicates)
-- Task capability validation with time limits
-- Edge cases: zero available time, owner with no pets
+The test suite currently has 85 tests across:
 
-#### **Scheduler Task Selection & Ranking (10 tests)**
-- Schedule generation with priority-based ranking
-- Time budget and max-tasks-per-day enforcement
-- Task filtering (completed, exceeds time, not yet due)
-- Ranking: high-priority > required > matching preferences
-- Edge cases: empty schedule, all tasks exceed limits
+- Task validation and behavior
+- Pet task management
+- Owner constraints and preferences
+- Scheduler ranking and selection
+- Recurrence and conflict detection
+- Time sorting and task filtering
 
-#### **Recurring Tasks & Conflict Detection (10 tests)**
-- Daily/weekly recurring task creation with correct due dates
-- One-time tasks (no recurrence)
-- Conflict detection with overlapping times (HH:MM and start_minute)
-- Boundary cases: 09:00-10:00 + 10:00-11:00 = no conflict
-- Conflict warnings with readable messages
+### Current result
 
-#### **Time Sorting & Filtering (6 tests)**
-- Chronological HH:MM sorting (07:00 → 22:00)
-- Coarse time slot ordering (morning → afternoon → evening → anytime)
-- Pet name filtering (case-insensitive)
-- Status filtering (all, completed, pending)
+- 85 passed
+- 0 failed
+- 0 skipped
 
-#### **Enhanced Requirement Verification (3 tests)**
-- test_sorting_correctness_chronological_order: 6 tasks in random order sort to strict chronological sequence
-- test_recurrence_logic_daily_task_creates_next_instance: Marking daily task complete creates next-day instance with inherited properties; chain continues for multiple completions
-- test_conflict_detection_flags_duplicate_times: Multi-pet scenario with 5 overlapping tasks; all conflicts detected, warnings generated, scheduler skips conflicting tasks
+## Project Files
 
-### Test Results
+- pawpal_system.py: data models and scheduling logic (Owner, Pet, Task, Scheduler)
+- app.py: Streamlit interface
+- tests/test_pawpal.py: test suite
+- uml_final.mmd: final Mermaid UML source
+- uml_final.png: exported UML image
 
-```
-============================= 83 passed in 0.41s ==============================
-```
+## Notes and Limits
 
-- ✅ **83 tests PASSED** — All tests execute successfully
-- ❌ **0 tests FAILED** — No failures or regressions
-- ⊘ **0 tests SKIPPED** — Full coverage with no exclusions
-- ⏱️ **0.41 seconds** — Fast feedback loop
+- The current design assumes a single owner session.
+- Conflict detection depends on explicit timing (time or start_minute).
+- The scheduler is intentionally lightweight and explainable, not a full optimization engine.
 
-### System Reliability Assessment
 
-Based on comprehensive test coverage and results:
-
-#### **Confidence Level: ⭐⭐⭐⭐⭐ (5/5 Stars)**
-
-**Why:**
-1. **High Coverage**: 83 tests covering 5 major components (Task, Pet, Owner, Scheduler, utilities)
-2. **Happy Path Validation**: Core workflows verified (task creation, schedule generation, recurring tasks)
-3. **Edge Case Protection**: 18 tests specifically validate error handling and boundary conditions
-4. **Real-World Scenarios**: Multi-pet scheduling with conflict detection simulates actual usage
-5. **Data Integrity**: Duplicate prevention, proper state transitions, and error propagation all tested
-6. **Performance**: Tests run in 0.41s, indicating efficient algorithms
-7. **Zero Failures**: 100% pass rate with no flaky tests
-
-**System is production-ready for:**
-- ✅ Pet owner task scheduling
-- ✅ Multi-pet household management
-- ✅ Recurring task automation (daily/weekly)
-- ✅ Time-conflict prevention
-- ✅ Priority-based task selection
-- ✅ Owner preference matching
-
-**Known Limitations:**
-- Tests assume single owner per run (not multi-user scenarios)
-- Conflict detection works well for manual time inputs; untimed tasks cannot conflict-check
-- Scheduler is optimistic (doesn't handle over-constrained scenarios gracefully)

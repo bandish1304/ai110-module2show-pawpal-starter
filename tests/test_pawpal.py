@@ -86,13 +86,14 @@ def test_mark_task_complete_creates_next_daily_occurrence():
     owner.add_pet(pet)
 
     scheduler = Scheduler(owner)
-    next_task = scheduler.mark_task_complete("daily-med", completed_on=date(2026, 3, 22))
+    completion_date = date.today()
+    next_task = scheduler.mark_task_complete("daily-med", completed_on=completion_date)
 
     assert recurring.is_completed is True
     assert next_task is not None
     assert next_task.task_id.startswith("daily-med-next-")
     assert next_task.is_completed is False
-    assert next_task.due_date == date(2026, 3, 23)
+    assert next_task.due_date == completion_date + timedelta(days=1)
 
     scheduled_today = scheduler.generate_schedule(day_index=0)
     scheduled_tomorrow = scheduler.generate_schedule(day_index=1)
@@ -133,6 +134,128 @@ def test_conflict_detection_skips_overlapping_tasks():
 
     conflict_pairs = scheduler.detect_conflicts(owner.get_all_tasks())
     assert len(conflict_pairs) == 1
+
+
+def test_next_available_slot_mode_reschedules_conflicting_task():
+    owner = Owner(name="Ben", available_minutes_per_day=120, max_tasks_per_day=5)
+    pet = Pet(name="Jack", species="dog")
+    pet.add_task(
+        Task(
+            task_id="task-a",
+            title="Task A",
+            duration_minutes=30,
+            priority="high",
+            start_minute=60,
+        )
+    )
+    pet.add_task(
+        Task(
+            task_id="task-b",
+            title="Task B",
+            duration_minutes=30,
+            priority="high",
+            start_minute=75,
+        )
+    )
+    owner.add_pet(pet)
+
+    scheduler = Scheduler(owner)
+    scheduled = scheduler.generate_schedule(enable_next_available_slot=True)
+
+    assert [task.task_id for task in scheduled] == ["task-a", "task-b"]
+    assert pet.get_task_by_id("task-b").start_minute == 90
+    assert "next available slot" in scheduler.selection_reasons["task-b"].lower()
+
+
+def test_next_available_slot_mode_skips_when_no_space_left_in_day():
+    owner = Owner(name="Ben", available_minutes_per_day=180, max_tasks_per_day=5)
+    pet = Pet(name="Jack", species="dog")
+    pet.add_task(
+        Task(
+            task_id="late-task-a",
+            title="Late Task A",
+            duration_minutes=60,
+            priority="high",
+            start_minute=1380,
+        )
+    )
+    pet.add_task(
+        Task(
+            task_id="late-task-b",
+            title="Late Task B",
+            duration_minutes=60,
+            priority="high",
+            start_minute=1410,
+        )
+    )
+    owner.add_pet(pet)
+
+    scheduler = Scheduler(owner)
+    scheduled = scheduler.generate_schedule(enable_next_available_slot=True)
+
+    scheduled_ids = [task.task_id for task in scheduled]
+    assert scheduled_ids == ["late-task-a"]
+    assert any(task.task_id == "late-task-b" for task in scheduler.unscheduled_tasks)
+
+
+def test_rank_tasks_sorts_by_priority_before_time():
+    owner = Owner(name="Ben", available_minutes_per_day=120)
+    pet = Pet(name="Jack", species="dog")
+    pet.add_task(
+        Task(
+            task_id="low-early",
+            title="Low Early",
+            duration_minutes=10,
+            priority="low",
+            time="08:00",
+        )
+    )
+    pet.add_task(
+        Task(
+            task_id="high-later",
+            title="High Later",
+            duration_minutes=10,
+            priority="high",
+            time="10:00",
+        )
+    )
+    owner.add_pet(pet)
+
+    scheduler = Scheduler(owner)
+    scheduler.refresh_inputs()
+    ranked = scheduler.rank_tasks()
+
+    assert [task.task_id for task in ranked] == ["high-later", "low-early"]
+
+
+def test_rank_tasks_uses_time_when_priority_matches():
+    owner = Owner(name="Ben", available_minutes_per_day=120)
+    pet = Pet(name="Jack", species="dog")
+    pet.add_task(
+        Task(
+            task_id="high-late",
+            title="High Late",
+            duration_minutes=10,
+            priority="high",
+            time="11:30",
+        )
+    )
+    pet.add_task(
+        Task(
+            task_id="high-early",
+            title="High Early",
+            duration_minutes=10,
+            priority="high",
+            time="09:15",
+        )
+    )
+    owner.add_pet(pet)
+
+    scheduler = Scheduler(owner)
+    scheduler.refresh_inputs()
+    ranked = scheduler.rank_tasks()
+
+    assert [task.task_id for task in ranked] == ["high-early", "high-late"]
 
 
 def test_sort_by_time_orders_hhmm_strings_correctly():
@@ -1370,3 +1493,101 @@ def test_conflict_detection_flags_duplicate_times():
     unscheduled = scheduler.unscheduled_tasks
     assert any("Skipped because it conflicts" in scheduler.selection_reasons.get(task.task_id, "") for task in unscheduled), \
         "Should have at least one task marked as unscheduled due to conflict"
+
+
+def test_owner_save_and_load_json_roundtrip(tmp_path):
+    owner = Owner(
+        name="Ben",
+        available_minutes_per_day=90,
+        preferred_schedule="evening",
+        task_preferences=["medication", "feeding"],
+        max_tasks_per_day=7,
+        notes="Persist this owner",
+    )
+    pet = Pet(name="Jack", species="dog", age=4, energy_level="high")
+    task = Task(
+        task_id="persist-1",
+        title="Evening Meds",
+        duration_minutes=10,
+        priority="high",
+        frequency="daily",
+        preferred_time="evening",
+        time="19:30",
+        due_date=date.today(),
+        is_required=True,
+        start_minute=1170,
+        notes="with food",
+        description="anti-inflammatory",
+    )
+    pet.add_task(task)
+    owner.add_pet(pet)
+
+    data_file = tmp_path / "data.json"
+    owner.save_to_json(data_file)
+
+    restored_owner = Owner.load_from_json(data_file)
+
+    assert restored_owner.name == "Ben"
+    assert restored_owner.available_minutes_per_day == 90
+    assert restored_owner.preferred_schedule == "evening"
+    assert restored_owner.task_preferences == ["medication", "feeding"]
+    assert restored_owner.max_tasks_per_day == 7
+    assert restored_owner.notes == "Persist this owner"
+
+    restored_pet = restored_owner.get_pet("Jack")
+    assert restored_pet is not None
+    assert restored_pet.species == "dog"
+
+    restored_task = restored_pet.get_task_by_id("persist-1")
+    assert restored_task is not None
+    assert restored_task.title == "Evening Meds"
+    assert restored_task.time == "19:30"
+    assert restored_task.start_minute == 1170
+    assert restored_task.is_required is True
+
+
+def test_task_date_fields_roundtrip_in_owner_json(tmp_path):
+    owner = Owner(name="Ava")
+    pet = Pet(name="Luna", species="cat")
+    task = Task(
+        task_id="persist-2",
+        title="Weekly Grooming",
+        duration_minutes=30,
+        frequency="weekly",
+        due_date=date.today() + timedelta(days=2),
+    )
+    task.mark_complete(completed_on=date.today())
+    pet.add_task(task)
+    owner.add_pet(pet)
+
+    data_file = tmp_path / "data.json"
+    owner.save_to_json(data_file)
+    restored_owner = Owner.load_from_json(data_file)
+
+    restored_task = restored_owner.get_pet("Luna").get_task_by_id("persist-2")
+    assert restored_task.due_date == task.due_date
+    assert restored_task.last_completed_on == task.last_completed_on
+    assert restored_task.is_completed is True
+
+
+def test_explain_schedule_table_includes_status_and_task_names():
+    owner = Owner(name="Ben", available_minutes_per_day=60)
+    pet = Pet(name="Jack", species="dog")
+    pet.add_task(
+        Task(
+            task_id="table-1",
+            title="Morning Walk",
+            duration_minutes=20,
+            priority="high",
+            time="08:00",
+        )
+    )
+    owner.add_pet(pet)
+
+    scheduler = Scheduler(owner)
+    scheduler.generate_schedule()
+    table_text = scheduler.explain_schedule_table()
+
+    assert "Status" in table_text
+    assert "Morning Walk" in table_text
+    assert "Scheduled" in table_text

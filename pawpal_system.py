@@ -6,8 +6,15 @@ Class skeletons for Owner, Pet, Task, and Scheduler.
 """
 
 from __future__ import annotations
+import json
 from dataclasses import dataclass, field
 from datetime import date, timedelta
+from pathlib import Path
+
+try:
+    from tabulate import tabulate
+except ImportError:
+    tabulate = None
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +150,44 @@ class Task:
             details.insert(1, self.description)
         return " | ".join(details)
 
+    def to_dict(self) -> dict:
+        """Return a JSON-serializable dictionary for this task."""
+        return {
+            "task_id": self.task_id,
+            "title": self.title,
+            "duration_minutes": self.duration_minutes,
+            "priority": self.priority,
+            "category": self.category,
+            "frequency": self.frequency,
+            "preferred_time": self.preferred_time,
+            "time": self.time,
+            "due_date": self.due_date.isoformat(),
+            "is_required": self.is_required,
+            "start_minute": self.start_minute,
+            "notes": self.notes,
+            "description": self.description,
+            "is_completed": self.is_completed,
+            "last_completed_day": self.last_completed_day,
+            "last_completed_on": (
+                self.last_completed_on.isoformat() if self.last_completed_on is not None else None
+            ),
+        }
+
+    @staticmethod
+    def from_dict(data: dict) -> Task:
+        """Build a Task from a dictionary loaded from JSON."""
+        payload = dict(data)
+
+        due_date_text = payload.get("due_date")
+        if due_date_text:
+            payload["due_date"] = date.fromisoformat(due_date_text)
+
+        last_completed_text = payload.get("last_completed_on")
+        if last_completed_text:
+            payload["last_completed_on"] = date.fromisoformat(last_completed_text)
+
+        return Task(**payload)
+
 
 # ---------------------------------------------------------------------------
 # Pet — uses dataclass for clean attribute declaration
@@ -207,6 +252,27 @@ class Pet:
             f"{self.name} ({self.species}) - {len(self.care_tasks)} task(s), "
             f"energy: {self.energy_level}"
         )
+
+    def to_dict(self) -> dict:
+        """Return a JSON-serializable dictionary for this pet and its tasks."""
+        return {
+            "name": self.name,
+            "species": self.species,
+            "breed": self.breed,
+            "age": self.age,
+            "energy_level": self.energy_level,
+            "medical_needs": self.medical_needs,
+            "care_tasks": [task.to_dict() for task in self.care_tasks],
+        }
+
+    @staticmethod
+    def from_dict(data: dict) -> Pet:
+        """Build a Pet from a dictionary loaded from JSON."""
+        payload = dict(data)
+        task_payloads = payload.pop("care_tasks", [])
+        pet = Pet(**payload)
+        pet.care_tasks = [Task.from_dict(item) for item in task_payloads]
+        return pet
 
 
 # ---------------------------------------------------------------------------
@@ -304,6 +370,40 @@ class Owner:
             f"prefers {self.preferred_schedule}, and manages {len(self.pets)} pet(s)"
         )
 
+    def to_dict(self) -> dict:
+        """Return a JSON-serializable dictionary for this owner."""
+        return {
+            "name": self.name,
+            "available_minutes_per_day": self.available_minutes_per_day,
+            "preferred_schedule": self.preferred_schedule,
+            "task_preferences": list(self.task_preferences),
+            "max_tasks_per_day": self.max_tasks_per_day,
+            "notes": self.notes,
+            "pets": [pet.to_dict() for pet in self.pets],
+        }
+
+    @staticmethod
+    def from_dict(data: dict) -> Owner:
+        """Build an Owner from a dictionary loaded from JSON."""
+        payload = dict(data)
+        pet_payloads = payload.pop("pets", [])
+        pets = [Pet.from_dict(item) for item in pet_payloads]
+        return Owner(**payload, pets=pets)
+
+    def save_to_json(self, file_path: str | Path) -> None:
+        """Save owner, pets, and tasks to a JSON file."""
+        target = Path(file_path)
+        with target.open("w", encoding="utf-8") as file_handle:
+            json.dump(self.to_dict(), file_handle, indent=2)
+
+    @staticmethod
+    def load_from_json(file_path: str | Path) -> Owner:
+        """Load owner, pets, and tasks from a JSON file."""
+        target = Path(file_path)
+        with target.open("r", encoding="utf-8") as file_handle:
+            payload = json.load(file_handle)
+        return Owner.from_dict(payload)
+
 
 # ---------------------------------------------------------------------------
 # Scheduler — orchestrates the daily plan
@@ -312,9 +412,15 @@ class Owner:
 class Scheduler:
     """Selects and orders tasks to build a daily care plan."""
 
-    def __init__(self, owner: Owner, pet: Pet | None = None):
+    def __init__(
+        self,
+        owner: Owner,
+        pet: Pet | None = None,
+        enable_next_available_slot: bool = False,
+    ):
         self.owner = owner
         self.pet = pet
+        self.enable_next_available_slot = enable_next_available_slot
         self.tasks: list[Task] = []
         self.time_budget: int = 0
         self.scheduled_tasks: list[Task] = []
@@ -329,6 +435,12 @@ class Scheduler:
         "evening": 2,
         "night": 3,
         "anytime": 4,
+    }
+
+    PRIORITY_ORDER = {
+        "high": 0,
+        "medium": 1,
+        "low": 2,
     }
 
     def refresh_inputs(self) -> None:
@@ -347,16 +459,20 @@ class Scheduler:
                 self.task_pet_lookup[task.task_id] = pet.name
         self.tasks = tasks
 
-    def generate_schedule(self, day_index: int = 0) -> list[Task]:
+    def generate_schedule(
+        self,
+        day_index: int = 0,
+        enable_next_available_slot: bool | None = None,
+    ) -> list[Task]:
         """Build and return the list of tasks due on the target day.
 
-        The target day is computed as ``today + day_index`` and stored in
-        ``self.schedule_date``. Eligibility checks (including recurrence due dates)
+        The target day is computed as today + day_index and stored in
+        self.schedule_date. Eligibility checks (including recurrence due dates)
         are then evaluated against that date.
         """
         self.schedule_date = date.today() + timedelta(days=day_index)
         self.refresh_inputs()
-        self.fit_tasks_into_day()
+        self.fit_tasks_into_day(enable_next_available_slot=enable_next_available_slot)
         return list(self.scheduled_tasks)
 
     def prepare_recurring_tasks(self, day_index: int = 0) -> None:
@@ -370,12 +486,12 @@ class Scheduler:
     ) -> Task | None:
         """Complete a task and optionally create its next recurring instance.
 
-        For tasks with ``daily`` or ``weekly`` frequency, this method creates a new
-        pending Task due on ``completed_on + timedelta(days=1|7)`` and adds it to the
+        For tasks with daily or weekly frequency, this method creates a new
+        pending Task due on completed_on + timedelta(days=1|7) and adds it to the
         same pet. Non-recurring tasks are just marked complete.
 
         Returns:
-            The newly created recurring task when applicable, otherwise ``None``.
+            The newly created recurring task when applicable, otherwise None.
         """
         completion_date = completed_on or date.today()
         pets = [self.pet] if self.pet is not None else self.owner.get_pets()
@@ -399,16 +515,25 @@ class Scheduler:
         raise ValueError(f"Task with id '{task_id}' was not found")
 
     def rank_tasks(self) -> list[Task]:
-        """Return eligible tasks sorted by ranking score and tie-breakers."""
+        """Return eligible tasks sorted by priority first, then time and tie-breakers."""
         ranked_tasks = self.filter_tasks()
         return sorted(
             ranked_tasks,
             key=lambda task: (
+                self.PRIORITY_ORDER.get(task.priority, 99),
+                self._get_rank_time_value(task),
                 -self._get_task_rank(task),
                 task.duration_minutes,
                 task.title.lower(),
             ),
         )
+
+    def _get_rank_time_value(self, task: Task) -> int:
+        """Return a comparable minute value for scheduling tie-breaks by time."""
+        start_minute = self._get_task_start_minute(task)
+        if start_minute is not None:
+            return start_minute
+        return 99 * 60
 
     def filter_tasks(self) -> list[Task]:
         """Return tasks eligible for scheduling and record skipped reasons."""
@@ -442,7 +567,7 @@ class Scheduler:
 
         Ordering priority:
         1) preferred slot (morning/afternoon/evening/night/anytime),
-        2) explicit ``start_minute`` when present,
+        2) explicit start_minute when present,
         3) shorter duration,
         4) title alphabetically.
         """
@@ -458,10 +583,10 @@ class Scheduler:
         )
 
     def sort_by_time(self, tasks: list[Task] | None = None) -> list[Task]:
-        """Sort tasks by explicit ``HH:MM`` values.
+        """Sort tasks by explicit HH:MM values.
 
-        Tasks without a ``time`` value are pushed to the end by assigning them a
-        large sentinel tuple key ``(99, 99)``.
+        Tasks without a time value are pushed to the end by assigning them a
+        large sentinel tuple key (99, 99).
         """
         tasks_to_sort = list(tasks) if tasks is not None else list(self.tasks)
         return sorted(
@@ -481,7 +606,7 @@ class Scheduler:
 
         Args:
             pet_name: When provided, include only tasks for that pet.
-            status: One of ``all``, ``completed``, or ``pending``.
+            status: One of all, completed, or pending.
 
         Returns:
             A filtered list preserving original task order.
@@ -510,10 +635,19 @@ class Scheduler:
         """Alias for filtering tasks by pet name and completion status."""
         return self.filter_tasks_by_pet_status(pet_name=pet_name, status=status)
 
-    def fit_tasks_into_day(self) -> None:
-        """Select ranked tasks that fit time and daily task-count constraints."""
+    def fit_tasks_into_day(self, enable_next_available_slot: bool | None = None) -> None:
+        """Select ranked tasks that fit time and daily task-count constraints.
+
+        When next-available-slot mode is enabled, timed tasks that conflict are
+        shifted to the nearest non-conflicting future start time when possible.
+        """
         remaining_minutes = self.time_budget
         ranked_tasks = self.sort_tasks()
+        use_next_slot = (
+            self.enable_next_available_slot
+            if enable_next_available_slot is None
+            else enable_next_available_slot
+        )
 
         for task in ranked_tasks:
             if len(self.scheduled_tasks) >= self.owner.max_tasks_per_day:
@@ -532,6 +666,18 @@ class Scheduler:
 
             conflict_task = self._find_conflicting_task(task)
             if conflict_task is not None:
+                if use_next_slot:
+                    next_slot = self._find_next_available_slot(task)
+                    if next_slot is not None:
+                        self._apply_rescheduled_start(task, next_slot)
+                        self.scheduled_tasks.append(task)
+                        remaining_minutes -= task.duration_minutes
+                        self.selection_reasons[task.task_id] = (
+                            "Selected after moving to next available slot at "
+                            f"{self._format_minutes(next_slot)} to avoid conflicts."
+                        )
+                        continue
+
                 conflicting_title = conflict_task.title
                 self.unscheduled_tasks.append(task)
                 self.selection_reasons[task.task_id] = (
@@ -547,7 +693,7 @@ class Scheduler:
         """Return all overlapping task pairs based on computed start/end windows.
 
         The method builds a timeline of tasks with concrete start times (from either
-        ``start_minute`` or parsed ``HH:MM``), sorts by start time, and scans forward
+        start_minute or parsed HH:MM), sorts by start time, and scans forward
         with early-break once no further overlap is possible.
         """
         if not self.tasks:
@@ -624,6 +770,62 @@ class Scheduler:
 
         return "\n".join(lines)
 
+    def explain_schedule_table(self) -> str:
+        """Return schedule output formatted as a structured text table."""
+        if not self.scheduled_tasks and not self.unscheduled_tasks:
+            self.generate_schedule()
+
+        headers = ["Status", "Pet", "Task", "Priority", "Time", "Duration", "Reason"]
+        rows: list[list[str]] = []
+
+        for task in self.scheduled_tasks:
+            rows.append(
+                [
+                    "Scheduled",
+                    self.task_pet_lookup.get(task.task_id, "Unknown pet"),
+                    task.title,
+                    task.priority.capitalize(),
+                    self._format_task_start(task),
+                    f"{task.duration_minutes} min",
+                    self.selection_reasons.get(task.task_id, "Selected"),
+                ]
+            )
+
+        for task in self.unscheduled_tasks:
+            rows.append(
+                [
+                    "Skipped",
+                    self.task_pet_lookup.get(task.task_id, "Unknown pet"),
+                    task.title,
+                    task.priority.capitalize(),
+                    self._format_task_start(task),
+                    f"{task.duration_minutes} min",
+                    self.selection_reasons.get(task.task_id, "Not scheduled"),
+                ]
+            )
+
+        if not rows:
+            return "No schedule data available."
+
+        if tabulate is not None:
+            return tabulate(rows, headers=headers, tablefmt="github")
+
+        column_widths = [len(header) for header in headers]
+        for row in rows:
+            for index, value in enumerate(row):
+                column_widths[index] = max(column_widths[index], len(str(value)))
+
+        def _render_row(row_values: list[str]) -> str:
+            return " | ".join(
+                str(value).ljust(column_widths[index])
+                for index, value in enumerate(row_values)
+            )
+
+        separator = "-+-".join("-" * width for width in column_widths)
+        output_lines = [_render_row(headers), separator]
+        output_lines.extend(_render_row(row) for row in rows)
+        return "\n".join(output_lines)
+
     def _get_task_rank(self, task: Task) -> int:
         """Calculate composite rank score for a task."""
         score = task.get_priority_score()
@@ -680,9 +882,48 @@ class Scheduler:
         task_b_end = start_b + task_b.duration_minutes
         return start_a < task_b_end and start_b < task_a_end
 
+    def _find_next_available_slot(self, task: Task) -> int | None:
+        """Return the nearest future start minute that avoids all current conflicts."""
+        start_minute = self._get_task_start_minute(task)
+        if start_minute is None:
+            return None
+
+        busy_windows: list[tuple[int, int]] = []
+        for scheduled_task in self.scheduled_tasks:
+            scheduled_start = self._get_task_start_minute(scheduled_task)
+            if scheduled_start is None:
+                continue
+            scheduled_end = scheduled_start + scheduled_task.duration_minutes
+            busy_windows.append((scheduled_start, scheduled_end))
+
+        busy_windows.sort(key=lambda window: window[0])
+        candidate_start = start_minute
+        for busy_start, busy_end in busy_windows:
+            candidate_end = candidate_start + task.duration_minutes
+            if candidate_end <= busy_start:
+                return candidate_start
+            if candidate_start < busy_end:
+                candidate_start = busy_end
+
+        if candidate_start + task.duration_minutes > 24 * 60:
+            return None
+        return candidate_start
+
+    @staticmethod
+    def _format_minutes(total_minutes: int) -> str:
+        """Format absolute minutes from midnight as HH:MM."""
+        hours = total_minutes // 60
+        minutes = total_minutes % 60
+        return f"{hours:02d}:{minutes:02d}"
+
+    def _apply_rescheduled_start(self, task: Task, new_start_minute: int) -> None:
+        """Update task timing fields after a next-slot placement decision."""
+        task.start_minute = new_start_minute
+        task.time = self._format_minutes(new_start_minute)
+
     @staticmethod
     def _get_task_start_minute(task: Task) -> int | None:
-        """Resolve a task's start minute from ``start_minute`` or ``HH:MM`` text."""
+        """Resolve a task's start minute from start_minute or HH:MM text."""
         if task.start_minute is not None:
             return task.start_minute
         if not task.time:
@@ -704,9 +945,9 @@ class Scheduler:
 
     @staticmethod
     def _create_next_recurring_task(task: Task, pet: Pet, next_due_date: date) -> Task:
-        """Clone a recurring task into a new pending task due on ``next_due_date``.
+        """Clone a recurring task into a new pending task due on next_due_date.
 
-        The method also ensures a unique ``task_id`` within the pet by appending
+        The method also ensures a unique task_id within the pet by appending
         a numeric suffix when needed.
         """
         base_task_id = f"{task.task_id}-next-{next_due_date.isoformat()}"
